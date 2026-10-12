@@ -698,29 +698,28 @@ struct FragmentStructureTests {
     #expect(seq2 == seq1 + 1)
   }
 
-  @Test("tfdt base decode time advances between fragments")
-  func tfdtAdvances() {
+  @Test("tfdt retains real time at fractional-millisecond frame rates", arguments: [15, 24, 30])
+  func tfdtAdvances(fps: Int32) {
     let writer = FragmentedMP4Writer()
-    writer.configure(fps: 30)
+    writer.configure(fps: Int(fps))
     let fmt = makeFormatDescription()
     nonisolated(unsafe) var emitted: [MP4Fragment] = []
     writer.onFragmentReady = { emitted.append($0) }
 
-    let frameDuration: Int64 = 33
     var frameIndex: Int64 = 0
     for _ in 0..<2 {
-      let kfPTS = CMTime(value: frameIndex * frameDuration, timescale: 1000)
+      let kfPTS = CMTime(value: frameIndex, timescale: fps)
       writer.appendVideoSample(
         makeSampleBuffer(pts: kfPTS, isKeyframe: true, formatDescription: fmt))
       frameIndex += 1
-      for _ in 0..<119 {
-        let pts = CMTime(value: frameIndex * frameDuration, timescale: 1000)
+      for _ in 1..<(Int(fps) * 4) {
+        let pts = CMTime(value: frameIndex, timescale: fps)
         writer.appendVideoSample(
           makeSampleBuffer(pts: pts, isKeyframe: false, formatDescription: fmt))
         frameIndex += 1
       }
     }
-    let finalPTS = CMTime(value: frameIndex * frameDuration, timescale: 1000)
+    let finalPTS = CMTime(value: frameIndex, timescale: fps)
     writer.appendVideoSample(
       makeSampleBuffer(pts: finalPTS, isKeyframe: true, formatDescription: fmt))
 
@@ -740,7 +739,7 @@ struct FragmentStructureTests {
     let dt1 = extractTfdt(emitted[0].data)
     let dt2 = extractTfdt(emitted[1].data)
     #expect(dt1 == 0, "First fragment should start at decode time 0")
-    #expect(dt2 > 0, "Second fragment should have advanced decode time")
+    #expect(dt2 == 4000, "Four seconds of capture must remain four seconds in the media clock")
   }
 
   @Test("data_offset in trun points past moof to mdat payload")

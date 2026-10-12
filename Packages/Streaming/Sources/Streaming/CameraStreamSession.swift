@@ -2,6 +2,7 @@
 import AudioToolbox
 @preconcurrency import CoreMedia
 import Foundation
+import FragmentedMP4
 import Locked
 import SRTP
 import Sensors
@@ -45,6 +46,11 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
   private var interruptionObservers: [NSObjectProtocol] = []
   private var videoOutput: AVCaptureVideoDataOutput?
   private var compressionSession: VTCompressionSession?
+  // Availability erasure keeps the existing iOS 15 streaming API usable.
+  // The encoder is created, used, drained, and released on captureQueue.
+  private var recordingEncoder: AnyObject?
+  private var lastPreviewPTS: CMTime = .invalid
+  private var previewFrameDuration = 0.0
   public let captureQueue = DispatchQueue(
     label: "\(Bundle.main.bundleIdentifier ?? "Streaming").camera.capture")
   public let audioQueue = DispatchQueue(
@@ -230,7 +236,9 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
     width: Int, height: Int, fps: Int, bitrate: Int, payloadType: UInt8,
     audioPayloadType: UInt8 = 110, camera: AVCaptureDevice, rotationAngle: Int = 90,
     swapDimensions: Bool = true, existingCaptureSession: AVCaptureSession? = nil,
-    microphoneEnabled: Bool = true
+    microphoneEnabled: Bool = true,
+    recordingWriter: FragmentedMP4Writer? = nil,
+    recordingAllowed: @escaping @Sendable () -> Bool = { true }
   ) -> Bool {
     logger.info(
       "Starting stream: \(width)x\(height)@\(fps)fps, \(bitrate)kbps, PT=\(payloadType) → \(self.controllerAddress):\(self.controllerVideoPort)"
@@ -314,8 +322,32 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
     let encWidth = swapDimensions ? height : width
     let encHeight = swapDimensions ? width : height
     self.setupCompression(width: encWidth, height: encHeight, fps: fps, bitrate: bitrate)
+    if let recordingWriter {
+      guard #available(iOS 17.4, *), camera.supportsSessionPreset(.hd4K3840x2160)
+      else {
+        tearDown(keepCaptureSession: false)
+        return false
+      }
+      do {
+        try captureQueue.sync {
+          recordingEncoder = try VideoEncoder {
+            [weak recordingWriter] status, sample in
+            guard status == noErr, let sample, recordingAllowed() else { return }
+            recordingWriter?.appendVideoSample(sample)
+          }
+        }
+      } catch {
+        logger.error("Recording encoder setup failed: \(error)")
+        tearDown(keepCaptureSession: false)
+        return false
+      }
+    }
+    lastPreviewPTS = .invalid
+    previewFrameDuration = 1.0 / Double(fps)
     let captureOK = self.setupCapture(
-      width: width, height: height, fps: fps, camera: camera, rotationAngle: rotationAngle,
+      width: max(width, recordingWriter == nil ? 0 : 3840),
+      height: max(height, recordingWriter == nil ? 0 : 2160),
+      fps: max(fps, recordingWriter == nil ? 0 : 30), camera: camera, rotationAngle: rotationAngle,
       existingSession: existingCaptureSession, microphoneEnabled: microphoneEnabled)
     guard captureOK else {
       logger.error("Failed to set up capture pipeline")
@@ -329,6 +361,7 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
       }
       close(videoFD)
       self.videoSocketFD = -1
+      finishRecordingEncoder()
       return false
     }
     self.startRTCPTimer()
@@ -451,6 +484,7 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
     // Drain in-flight captureQueue blocks so no concurrent encodeFrame call
     // is mid-execution when we dispose resources.
     captureQueue.sync {}
+    finishRecordingEncoder()
 
     // Drain in-flight audioQueue blocks so no concurrent handleAudioSampleBuffer
     // or encodeAndSendAudioFrame call is mid-execution when we dispose resources.
@@ -538,6 +572,22 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
 
   // MARK: - Video Capture
 
+  private func finishRecordingEncoder() {
+    captureQueue.sync {
+      if #available(iOS 17.4, *), let encoder = recordingEncoder as? VideoEncoder {
+        do { try encoder.finish() } catch {
+          logger.error("Recording encoder drain failed: \(error)")
+        }
+      }
+      recordingEncoder = nil
+    }
+  }
+
+  /// Stop recording while keeping the existing live preview active.
+  public func stopRecording() {
+    finishRecordingEncoder()
+  }
+
   @discardableResult
   private func setupCapture(
     width: Int, height: Int, fps: Int, camera: AVCaptureDevice, rotationAngle: Int = 90,
@@ -596,7 +646,9 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
 
       // Change preset if needed (monitoring always uses .hd1920x1080)
       let targetPreset: AVCaptureSession.Preset =
-        width > 1280 ? .hd1920x1080 : width > 640 ? .hd1280x720 : .medium
+        width >= 3840
+        ? .hd4K3840x2160
+        : width > 1280 ? .hd1920x1080 : width > 640 ? .hd1280x720 : .medium
       if session.sessionPreset != targetPreset { session.sessionPreset = targetPreset }
 
       // Add streaming video output
@@ -641,7 +693,10 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
       // Cold start — create a new AVCaptureSession from scratch
       session = AVCaptureSession()
       session.enableMultitaskingCameraIfSupported()
-      session.sessionPreset = width > 1280 ? .hd1920x1080 : width > 640 ? .hd1280x720 : .medium
+      session.sessionPreset =
+        width >= 3840
+        ? .hd4K3840x2160
+        : width > 1280 ? .hd1920x1080 : width > 640 ? .hd1280x720 : .medium
 
       do {
         let input = try AVCaptureDeviceInput(device: camera)
@@ -823,6 +878,17 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
 
   private func encodeFrame(_ pixelBuffer: CVPixelBuffer, pts: CMTime) {
     dispatchPrecondition(condition: .onQueue(captureQueue))
+    if #available(iOS 17.4, *), let encoder = recordingEncoder as? VideoEncoder {
+      do { try encoder.encode(pixelBuffer, pts: pts) } catch {
+        logger.error("Recording encode failed: \(error)")
+      }
+      if lastPreviewPTS.isValid,
+        CMTimeGetSeconds(CMTimeSubtract(pts, lastPreviewPTS)) < previewFrameDuration - 0.0001
+      {
+        return
+      }
+      lastPreviewPTS = pts
+    }
     guard let cs = compressionSession else { return }
 
     encodeFrameCount += 1

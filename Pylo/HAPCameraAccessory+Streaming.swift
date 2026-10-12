@@ -277,6 +277,7 @@ extension HAPCameraAccessory {
     width: Int, height: Int, fps: Int, bitrate: Int, payloadType: UInt8,
     audioPayloadType: UInt8 = 110
   ) {
+    guard homeKitCameraActive else { return }
     guard let session = streamSession else {
       logger.error("No stream session configured")
       return
@@ -308,7 +309,9 @@ extension HAPCameraAccessory {
     }
 
     let effectiveBitrate = max(bitrate, minBitrate)
-    let rotation = currentRotation()
+    var rotation = currentRotation()
+    let recording = recordIn4K && recordingActive != 0 && homeKitCameraActive
+    if recording { rotation = (0, false) }
     logger.info(
       "Bitrate: negotiated=\(bitrate)kbps, minimum=\(self.minBitrate)kbps, effective=\(effectiveBitrate)kbps, rotation=\(rotation.angle)\u{00B0}"
     )
@@ -316,7 +319,12 @@ extension HAPCameraAccessory {
       width: width, height: height, fps: fps, bitrate: effectiveBitrate, payloadType: payloadType,
       audioPayloadType: audioPayloadType, camera: camera, rotationAngle: rotation.angle,
       swapDimensions: rotation.swapDimensions, existingCaptureSession: existingSession,
-      microphoneEnabled: microphoneEnabled)
+      microphoneEnabled: microphoneEnabled,
+      recordingWriter: recording ? fragmentWriter : nil,
+      recordingAllowed: { [weak self] in
+        guard let self else { return false }
+        return self.homeKitCameraActive && self.recordingActive != 0
+      })
     if !started {
       logger.error("Stream session failed to start — clearing session")
       clearStreamSession(ifIdenticalTo: session)
@@ -337,7 +345,7 @@ extension HAPCameraAccessory {
   func stopStreaming() {
     // Hand off the AVCaptureSession back to monitoring if recording is armed,
     // so it can resume without a cold-start.
-    let recordingArmed = hksvState.withLock({ $0.recordingActive }) != 0
+    let recordingArmed = homeKitCameraActive && recordingActive != 0
     // Atomically detach the session to avoid racing with another device
     let session = detachStreamSession()
     let handBackSession: AVCaptureSession?

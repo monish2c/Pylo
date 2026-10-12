@@ -334,6 +334,7 @@ nonisolated final class HAPCameraAccessory: HAPAccessoryProtocol, HAPSnapshotPro
   /// Written once during setup before the server starts. Not locked because
   /// no concurrent access occurs — the server queue is not active during setup.
   var hksvEnabled: Bool = false
+  var recordIn4K: Bool = false
 
   var onRecordingConfigChange: ((_ active: Bool) -> Void)? {
     get { _callbacks.withLockUnchecked { $0.onRecordingConfigChange } }
@@ -602,6 +603,13 @@ nonisolated final class HAPCameraAccessory: HAPAccessoryProtocol, HAPSnapshotPro
         onStateChange?(aid, iid, .bool(v))
         // Mirror to motion sensor StatusActive (HAP-NodeJS convention)
         onStateChange?(aid, Self.iidMotionSensorStatusActive, .bool(v))
+        if !v {
+          if hasActiveStreamSession { stopStreaming() }
+          onMonitoringCaptureNeeded?(false, nil)
+          cachedFrame = nil
+        } else if recordingActive != 0, !hasActiveStreamSession {
+          onMonitoringCaptureNeeded?(true, nil)
+        }
         return true
       }
       return false
@@ -633,10 +641,14 @@ nonisolated final class HAPCameraAccessory: HAPAccessoryProtocol, HAPSnapshotPro
         // The monitoring layer handles that overlap gracefully.
         if isActive {
           let hasStream = hasActiveStreamSession
-          if !hasStream {
+          if recordIn4K && hasStream {
+            // Reconfigure a live 1080p capture before arming native 4K recording.
+            stopStreaming()
+          } else if !hasStream {
             onMonitoringCaptureNeeded?(true, nil)
           }
         } else {
+          streamSession?.stopRecording()
           onMonitoringCaptureNeeded?(false, nil)
         }
         return true

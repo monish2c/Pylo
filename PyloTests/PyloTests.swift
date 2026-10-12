@@ -605,6 +605,23 @@ struct VideoMotionDetectorThreadSafetyTests {
     let camera = HAPCameraAccessory(aid: 3)
     #expect(camera.cachedFrame == nil)
   }
+
+  @Test("Camera off clears cached footage and refuses in-flight snapshot frames")
+  func cameraOffRejectsSnapshot() async {
+    let camera = HAPCameraAccessory(aid: 3)
+    let context = CGContext(
+      data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+      bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue)!
+    let image = context.makeImage()!
+    camera.cachedFrame = image
+    camera.writeCharacteristic(iid: HAPCameraAccessory.iidHomeKitCameraActive, value: .bool(false))
+    #expect(camera.cachedFrame == nil)
+    // A capture callback already queued before shutdown may still publish a frame.
+    camera.cachedFrame = image
+    let snapshot = await Task.detached { camera.captureSnapshot(width: 1, height: 1) }.value
+    #expect(snapshot == nil)
+  }
 }
 
 // MARK: - Camera Write Characteristic Tests
@@ -676,11 +693,16 @@ struct CameraWriteCharacteristicTests {
       let value: HAPValue
     }
     let stateChanges = Locked<[Change]>(initialState: [])
+    let monitoringRequests = Locked<[Bool]>(initialState: [])
+    camera.onMonitoringCaptureNeeded = { needed, _ in
+      monitoringRequests.withLock { $0.append(needed) }
+    }
     camera.onStateChange = { _, iid, value in
       stateChanges.withLock { $0.append(Change(iid: iid, value: value)) }
     }
     camera.writeCharacteristic(iid: HAPCameraAccessory.iidHomeKitCameraActive, value: .bool(false))
     #expect(camera.homeKitCameraActive == false)
+    #expect(monitoringRequests.value == [false])
     // Should also mirror to motion sensor StatusActive
     let changes = stateChanges.withLock { $0 }
     #expect(changes.count == 2)
@@ -1103,6 +1125,16 @@ struct HAPViewModelTests {
     vm.startedConfig = AccessoryConfig(from: vm)
     vm.withRestoring { vm.flashlightEnabled = true }
     #expect(vm.needsRestart == true)
+  }
+
+  @Test("Changing 4K recording requires restart and reverting it clears restart")
+  func needsRestart4KRecordingChanged() {
+    let vm = HAPViewModel(skipRestore: true)
+    vm.startedConfig = AccessoryConfig(from: vm)
+    vm.withRestoring { vm.recordIn4K = true }
+    #expect(vm.needsRestart)
+    vm.withRestoring { vm.recordIn4K = false }
+    #expect(!vm.needsRestart)
   }
 
   @Test("needsRestart is true when camera selection changes")

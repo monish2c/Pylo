@@ -349,7 +349,7 @@ struct ContentView: View {
       }
       // Max Resolution
       HStack {
-        Text("Resolution")
+        Text("Live Resolution")
           .foregroundStyle(.secondary)
         Spacer()
         Picker("Resolution", selection: $viewModel.maxResolution) {
@@ -360,6 +360,16 @@ struct ContentView: View {
         .labelsHidden()
         .pickerStyle(.menu)
       }
+
+      Toggle("4K Secure Video Recording", isOn: $viewModel.recordIn4K)
+        .disabled(!viewModel.supports4KRecording)
+      Text(
+        viewModel.supports4KRecording
+          ? "Requires a compatible Home hub. Live viewing uses the resolution above."
+          : "4K recording is unavailable on this camera."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
 
       // Frame Rate
       HStack {
