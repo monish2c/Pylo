@@ -138,7 +138,6 @@ public final class FragmentedMP4Writer: @unchecked Sendable {
     var initSegment: Data?
     var includeAudioTrack = false
     var pendingAudioSamples: [Data] = []
-    var accumulatedAudioDecodeTime: UInt64 = 0
   }
 
   private let _writerState = Locked<WriterState>(initialState: WriterState())
@@ -159,6 +158,7 @@ public final class FragmentedMP4Writer: @unchecked Sendable {
       _writerState.withLock { state in
         if state.includeAudioTrack != newValue {
           state.includeAudioTrack = newValue
+          if !newValue { state.pendingAudioSamples.removeAll() }
           state.videoFormatDescription = nil
           state.initSegment = nil
         }
@@ -178,6 +178,7 @@ public final class FragmentedMP4Writer: @unchecked Sendable {
   /// at 16kHz/480 = 33.3 fps) to prevent unbounded memory growth.
   public func appendAudioSample(_ encodedFrame: Data) {
     _writerState.withLock { state in
+      guard state.includeAudioTrack else { return }
       if state.pendingAudioSamples.count < 340 {
         state.pendingAudioSamples.append(encodedFrame)
       }
@@ -290,7 +291,7 @@ public final class FragmentedMP4Writer: @unchecked Sendable {
 
   /// Stop the writer and flush any pending samples as a final fragment.
   ///
-  /// Continuity counters (`accumulatedDecodeTime`, `accumulatedAudioDecodeTime`) are
+  /// The continuity counter (`accumulatedDecodeTime`) is
   /// preserved so prebuffered fragments in the ring buffer form a valid continuous fMP4
   /// stream when the writer restarts. The ring buffer itself is NOT cleared — old
   /// fragments are naturally evicted as new ones arrive after restart.
@@ -439,9 +440,12 @@ public final class FragmentedMP4Writer: @unchecked Sendable {
       Self.putU32BE(&aTfhdP, 0x0200_0000)  // default_sample_flags (sync)
       let aTfhd = Self.mp4FullBox("tfhd", flags: 0x02_0028, payload: aTfhdP)
 
+      // Keep both tracks on the same clock when capture handoffs drop audio samples.
+      let audioDecodeTime =
+        s.accumulatedDecodeTime * UInt64(audioTimescale) / UInt64(videoTimescale)
       var aTfdtP = Data()
-      Self.putU32BE(&aTfdtP, UInt32((s.accumulatedAudioDecodeTime >> 32) & 0xFFFF_FFFF))
-      Self.putU32BE(&aTfdtP, UInt32(s.accumulatedAudioDecodeTime & 0xFFFF_FFFF))
+      Self.putU32BE(&aTfdtP, UInt32((audioDecodeTime >> 32) & 0xFFFF_FFFF))
+      Self.putU32BE(&aTfdtP, UInt32(audioDecodeTime & 0xFFFF_FFFF))
       let aTfdt = Self.mp4FullBox("tfdt", version: 1, payload: aTfdtP)
 
       // trun flags 0x000201: data-offset + sample-size (variable per frame)
@@ -493,11 +497,8 @@ public final class FragmentedMP4Writer: @unchecked Sendable {
       s.hasLoggedFirstFragment = true
     }
 
-    // Advance accumulated decode times for next fragment's tfdt
+    // Advance the video clock for the next fragment's tfdt
     s.accumulatedDecodeTime += totalTicks
-    if na > 0 {
-      s.accumulatedAudioDecodeTime += UInt64(na) * UInt64(audioFrameDuration)
-    }
 
     // Compute total duration as CMTime
     let totalDuration: CMTime

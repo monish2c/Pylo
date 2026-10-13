@@ -74,7 +74,7 @@ extension CameraStreamSession {
   }
 
   /// Encode a single AAC-ELD frame (480 samples) and send as an RTP packet.
-  private nonisolated func encodeAndSendAudioFrame(_ pcmData: Data) {
+  nonisolated func encodeAndSendAudioFrame(_ pcmData: Data) {
     guard let converter = audioConverter else { return }
 
     let outputBufferSize = 1024
@@ -144,6 +144,7 @@ extension CameraStreamSession {
     }
 
     guard let aacData else { return }
+    onRecordingAudioFrame?(aacData)
 
     // Wrap in RFC 3640 AU header section (HomeKit expects this framing)
     guard let framedPayload = AUHeader.add(to: aacData) else { return }

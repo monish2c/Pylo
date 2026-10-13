@@ -186,6 +186,12 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
     get { _onSnapshotFrame.value }
     set { _onSnapshotFrame.value = newValue }
   }
+  private let _onRecordingAudioFrame = Locked<(@Sendable (Data) -> Void)?>(initialState: nil)
+  /// Raw AAC-ELD frames shared with recording, before RTP framing.
+  public var onRecordingAudioFrame: (@Sendable (Data) -> Void)? {
+    get { _onRecordingAudioFrame.value }
+    set { _onRecordingAudioFrame.value = newValue }
+  }
   private var snapshotFrameCounter = 0
   private var snapshotInterval = 30  // every ~2s, derived from negotiated fps
 
@@ -493,6 +499,7 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
     // Drain in-flight audioQueue blocks so no concurrent handleAudioSampleBuffer
     // or encodeAndSendAudioFrame call is mid-execution when we dispose resources.
     audioQueue.sync {}
+    onRecordingAudioFrame = nil
 
     if let cs = compressionSession {
       // Flush in-flight async encodes before invalidating (undefined behavior otherwise)
@@ -590,6 +597,7 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
   /// Stop recording while keeping the existing live preview active.
   public func stopRecording() {
     finishRecordingEncoder()
+    audioQueue.sync { onRecordingAudioFrame = nil }
   }
 
   @discardableResult

@@ -671,6 +671,7 @@ nonisolated final class HAPCameraAccessory: HAPAccessoryProtocol, HAPSnapshotPro
       if let v = intFromValue(value) {
         let clamped = Int(UInt8(clamping: v))
         hksvState.withLock { $0.recordingAudioActive = UInt8(clamping: v) }
+        if clamped == 0 { fragmentWriter?.includeAudioTrack = false }
         onStateChange?(aid, iid, .int(clamped))
         onRecordingAudioActiveChange?(clamped != 0)
         return true

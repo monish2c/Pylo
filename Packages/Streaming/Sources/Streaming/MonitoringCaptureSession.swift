@@ -575,7 +575,8 @@ public nonisolated final class MonitoringCaptureSession: @unchecked Sendable {
       }
     guard let session else { return nil }
 
-    fragmentWriter?.includeAudioTrack = false
+    // The 4K live owner continues the same recording, including buffered audio.
+    if !recordIn4K { fragmentWriter?.includeAudioTrack = false }
 
     // Remove our outputs so AVFoundation stops delivering frames to our
     // delegates before we release them. Without this, in-flight frames can

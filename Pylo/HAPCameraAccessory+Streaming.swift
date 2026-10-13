@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import CryptoKit
 import Foundation
+import FragmentedMP4
 import HAP
 import Locked
 import Streaming
@@ -312,6 +313,16 @@ extension HAPCameraAccessory {
     var rotation = currentRotation()
     let recording = recordIn4K && recordingActive != 0 && homeKitCameraActive
     if recording { rotation = (0, false) }
+    if recording {
+      session.onRecordingAudioFrame = { [weak self, weak fragmentWriter] data in
+        guard let self, let fragmentWriter else { return }
+        let allowed =
+          self.homeKitCameraActive && self.recordingActive != 0
+          && self.recordingAudioActive != 0 && self.microphoneEnabled
+        fragmentWriter.includeAudioTrack = allowed
+        if allowed { fragmentWriter.appendAudioSample(data) }
+      }
+    }
     logger.info(
       "Bitrate: negotiated=\(bitrate)kbps, minimum=\(self.minBitrate)kbps, effective=\(effectiveBitrate)kbps, rotation=\(rotation.angle)\u{00B0}"
     )

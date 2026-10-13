@@ -408,6 +408,53 @@ struct FragmentedMP4WriterStructureTests {
     // Stop should clear without crashing
     writer.stop()
   }
+
+  @Test("Disabling audio discards buffered and subsequent microphone samples")
+  func disablingAudioDropsSamples() throws {
+    let writer = FragmentedMP4Writer()
+    writer.includeAudioTrack = true
+    writer.appendAudioSample(Data(repeating: 0xAA, count: 50))
+    writer.includeAudioTrack = false
+    writer.appendAudioSample(Data(repeating: 0xBB, count: 50))
+    writer.appendVideoSample(
+      makeSampleBuffer(
+        pts: .zero, isKeyframe: true, formatDescription: makeFormatDescription()))
+    writer.stop()
+    let fragment = try #require(writer.ringBuffer.snapshot().last)
+    let boxes = parseBoxes(fragment.data)
+    let moof = try #require(boxes.first { $0.type == "moof" })
+    #expect(parseBoxes(moof.payload).filter { $0.type == "traf" }.count == 1)
+    #expect(boxes.first { $0.type == "mdat" }?.payload.count == 100)
+  }
+
+  @Test("Dropped audio samples do not move subsequent sound ahead of video")
+  func audioFollowsVideoClock() throws {
+    let writer = FragmentedMP4Writer()
+    writer.includeAudioTrack = true
+    let format = makeFormatDescription()
+    for frame in 0...240 {
+      // Fewer audio packets simulate a gap during a capture-owner handoff.
+      if frame < 240 && frame % 3 == 0 {
+        writer.appendAudioSample(Data(repeating: 0xAA, count: 50))
+      }
+      writer.appendVideoSample(
+        makeSampleBuffer(
+          pts: CMTime(value: Int64(frame), timescale: 30), isKeyframe: frame % 120 == 0,
+          formatDescription: format))
+    }
+    let fragments = writer.ringBuffer.snapshot()
+    try #require(fragments.count == 2)
+    for (index, fragment) in fragments.enumerated() {
+      let moof = try #require(parseBoxes(fragment.data).first { $0.type == "moof" })
+      let tracks = parseBoxes(moof.payload).filter { $0.type == "traf" }
+      try #require(tracks.count == 2)
+      let tfdt = try #require(parseBoxes(tracks[1].payload).first { $0.type == "tfdt" })
+      let audioTime =
+        UInt64(readU32BE(tfdt.payload, at: 4)) << 32
+        | UInt64(readU32BE(tfdt.payload, at: 8))
+      #expect(audioTime == UInt64(index) * 64000)
+    }
+  }
 }
 
 // MARK: - Init Segment Structure Tests
