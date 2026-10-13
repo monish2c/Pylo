@@ -11,6 +11,88 @@ import Testing
 
 @testable import Pylo
 
+@Suite("Concurrent camera viewers")
+struct ConcurrentViewerTests {
+  @Test("Stream slots have unique IIDs and share the configured capabilities")
+  func accessoryDatabase() throws {
+    let camera = HAPCameraAccessory(aid: 3)
+    camera.hksvEnabled = true
+    camera.batteryState = BatteryState()
+    camera.maxResolution = .r720p
+    let services = try #require(camera.toJSON()["services"] as? [[String: Any]])
+    let streams = services.filter {
+      $0["type"] as? String == HAPCameraAccessory.uuidCameraRTPStreamManagement
+    }
+    #expect(streams.count == 5)
+    let iids = services.flatMap { service -> [Int] in
+      [service["iid"] as! Int]
+        + (service["characteristics"] as! [[String: Any]]).map { $0["iid"] as! Int }
+    }
+    #expect(Set(iids).count == iids.count)
+    for slot in camera.streamManagers.indices {
+      #expect(
+        camera.readCharacteristic(
+          iid: HAPCameraAccessory.streamIID(HAPCameraAccessory.iidSupportedVideoConfig, slot: slot))
+          == camera.readCharacteristic(iid: HAPCameraAccessory.iidSupportedVideoConfig))
+    }
+    let recording = try #require(
+      services.first {
+        $0["type"] as? String == HAPCameraAccessory.uuidCameraEventRecordingManagement
+      })
+    let linked = try #require(recording["linked"] as? [Int])
+    #expect(streams.allSatisfy { linked.contains($0["iid"] as! Int) })
+  }
+
+  @Test("A stale stop cannot replace a viewer; slot disable and camera Off are independent")
+  func sessionControls() throws {
+    let camera = HAPCameraAccessory(aid: 3)
+    defer { camera.stopStreaming() }
+    for slot in camera.streamManagers.indices {
+      var setup = TLV8.Builder()
+      setup.add(1, Data(repeating: UInt8(slot), count: 16))
+      #expect(
+        camera.writeCharacteristic(
+          iid: HAPCameraAccessory.streamIID(HAPCameraAccessory.iidSetupEndpoints, slot: slot),
+          value: .string(setup.base64())))
+      #expect(
+        camera.streamManagers[slot].streamSession?.sessionID
+          == Data(repeating: UInt8(slot), count: 16))
+    }
+    #expect(camera.hasActiveStreamSession)
+    var control = TLV8.Builder()
+    control.add(1, Data(repeating: 99, count: 16))
+    control.add(2, byte: 0)
+    var staleStop = TLV8.Builder()
+    staleStop.add(1, tlv: control)
+    #expect(
+      !camera.writeCharacteristic(
+        iid: HAPCameraAccessory.streamIID(HAPCameraAccessory.iidSelectedRTPStreamConfig, slot: 1),
+        value: .string(staleStop.base64())))
+    #expect(camera.streamManagers.allSatisfy { $0.streamSession != nil })
+
+    #expect(
+      camera.writeCharacteristic(iid: HAPCameraAccessory.iidMicrophoneMute, value: .bool(true)))
+    #expect(camera.streamManagers.allSatisfy { $0.streamSession?.isMuted == true })
+    #expect(
+      camera.writeCharacteristic(
+        iid: HAPCameraAccessory.streamIID(HAPCameraAccessory.iidRTPStreamActive, slot: 1),
+        value: .int(0)))
+    #expect(camera.streamManagers[1].streamSession == nil)
+    #expect(camera.streamManagers[0].streamSession != nil)
+    #expect(camera.streamManagers[2].streamSession != nil)
+    #expect(
+      camera.writeCharacteristic(
+        iid: HAPCameraAccessory.iidHomeKitCameraActive, value: .bool(false)))
+    #expect(!camera.hasActiveStreamSession)
+    for slot in camera.streamManagers.indices {
+      #expect(
+        !camera.writeCharacteristic(
+          iid: HAPCameraAccessory.streamIID(HAPCameraAccessory.iidSetupEndpoints, slot: slot),
+          value: .string("")))
+    }
+  }
+}
+
 // MARK: - HAP Lightbulb Accessory Tests
 
 @Suite("HAP Lightbulb Accessory")
@@ -432,9 +514,7 @@ struct BatteryServiceTests {
 
     let json = camera.toJSON()
     let services = json["services"] as! [[String: Any]]
-    // Accessory Info + Protocol Info + Camera RTP + Microphone + Speaker + Battery = 6 services
-    #expect(services.count == 6)
-    #expect(services[5]["type"] as? String == BatteryUUID.service)
+    #expect(services.filter { $0["type"] as? String == BatteryUUID.service }.count == 1)
   }
 
   @Test("Camera toJSON omits battery service when batteryState is nil")
@@ -442,8 +522,7 @@ struct BatteryServiceTests {
     let camera = HAPCameraAccessory(aid: 3)
     let json = camera.toJSON()
     let services = json["services"] as! [[String: Any]]
-    // Accessory Info + Protocol Info + Camera RTP + Microphone + Speaker = 5 services (no battery)
-    #expect(services.count == 5)
+    #expect(!services.contains { $0["type"] as? String == BatteryUUID.service })
   }
 
   @Test("readCharacteristic returns battery values when state is set")

@@ -8,15 +8,19 @@ import Testing
 
 @Suite("Native 4K Recording Encoder")
 struct VideoEncoderTests {
-  @Test("Hardware HEVC retains native 4K dimensions and rejects smaller input")
+  @Test(
+    "Hardware HEVC retains native 4K dimensions and rejects smaller input",
+    arguments: [false, true])
   @available(iOS 17.4, *)
-  func native4K() throws {
+  func native4K(portrait: Bool) throws {
+    let width = portrait ? 2160 : 3840
+    let height = portrait ? 3840 : 2160
     let results = Locked(
       initialState: (
         count: 0, failures: [OSStatus](), dimensions: CMVideoDimensions(width: 0, height: 0),
         codec: CMVideoCodecType(0)
       ))
-    let encoder = try VideoEncoder { status, sample in
+    let encoder = try VideoEncoder(portrait: portrait) { status, sample in
       let format = sample?.formatDescription
       let dimensions = format.map { CMVideoFormatDescriptionGetDimensions($0) }
       let codec = format.map { CMFormatDescriptionGetMediaSubType($0) }
@@ -32,7 +36,7 @@ struct VideoEncoderTests {
     var buffer: CVPixelBuffer?
     try #require(
       CVPixelBufferCreate(
-        nil, 3840, 2160, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        nil, width, height, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
         [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &buffer) == noErr)
     let pixels = try #require(buffer)
     CVPixelBufferLockBaseAddress(pixels, [])
@@ -52,8 +56,8 @@ struct VideoEncoderTests {
     #expect(result.failures.isEmpty)
     #expect(result.count == 12)
     #expect(result.codec == kCMVideoCodecType_HEVC)
-    #expect(result.dimensions.width == 3840)
-    #expect(result.dimensions.height == 2160)
+    #expect(result.dimensions.width == width)
+    #expect(result.dimensions.height == height)
     var smaller: CVPixelBuffer?
     try #require(
       CVPixelBufferCreate(

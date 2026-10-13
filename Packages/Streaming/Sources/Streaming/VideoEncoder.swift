@@ -25,17 +25,22 @@ public final class VideoEncoder {
   }
 
   private let output: Output
+  private let width: Int
+  private let height: Int
   private var compression: VTCompressionSession?
   private var lastPTS: CMTime = .invalid
   private var nextKeyframe: CMTime = .invalid
 
   public init(
+    portrait: Bool = false,
     output: @escaping @Sendable (OSStatus, CMSampleBuffer?) -> Void
   ) throws {
+    width = portrait ? 2160 : 3840
+    height = portrait ? 3840 : 2160
     self.output = Output(output)
     let box = self.output
     let status = VTCompressionSessionCreate(
-      allocator: nil, width: 3840, height: 2160,
+      allocator: nil, width: Int32(width), height: Int32(height),
       codecType: kCMVideoCodecType_HEVC,
       encoderSpecification: [
         kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true
@@ -84,10 +89,10 @@ public final class VideoEncoder {
     guard status == noErr else { throw Failure.videoToolbox(status) }
   }
 
-  /// Accept only native landscape 4K frames; never upscale a smaller source.
+  /// Accept only native 4K frames in the capture orientation; never upscale.
   public func encode(_ pixels: CVPixelBuffer, pts: CMTime) throws {
     guard let compression, pts.isNumeric,
-      CVPixelBufferGetWidth(pixels) == 3840, CVPixelBufferGetHeight(pixels) == 2160
+      CVPixelBufferGetWidth(pixels) == width, CVPixelBufferGetHeight(pixels) == height
     else { throw Failure.invalidConfiguration }
     if lastPTS.isValid {
       let elapsed = CMTimeGetSeconds(CMTimeSubtract(pts, lastPTS))

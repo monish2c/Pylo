@@ -235,7 +235,8 @@ final class HAPViewModel: ObservableObject {
 
   var supports4KRecording: Bool {
     guard #available(iOS 17.4, macOS 14.0, *),
-      let id = selectedStreamCamera?.id, let camera = AVCaptureDevice(uniqueID: id)
+      let id = selectedStreamCamera?.id, let camera = AVCaptureDevice(uniqueID: id),
+      camera.supportsSessionPreset(.hd4K3840x2160)
     else { return false }
     return camera.formats.contains {
       let size = CMVideoFormatDescriptionGetDimensions($0.formatDescription)
@@ -1342,7 +1343,7 @@ private nonisolated func createServerSetup(config: StartConfig) throws -> Server
         // Don't start the siren while the camera is streaming — the siren's
         // .playAndRecord audio session would clobber the camera's .voiceChat
         // session, breaking stream audio.
-        guard camera?.streamSession == nil else {
+        guard camera?.hasActiveStreamSession != true else {
           siren?.updateOn(false)
           return
         }
@@ -1471,7 +1472,7 @@ private nonisolated func createServerSetup(config: StartConfig) throws -> Server
 
       // Auto-start monitoring if recordingActive was restored from a previous session,
       // or if sensors need camera frames.
-      if camera.homeKitCameraActive, camera.streamSession == nil,
+      if camera.homeKitCameraActive, !camera.hasActiveStreamSession,
         camera.recordingActive != 0 || occupancyDetector != nil || ambientLightDetector != nil
       {
         let recordingArmed = camera.homeKitCameraActive && camera.recordingActive != 0
@@ -1498,7 +1499,7 @@ private nonisolated func createServerSetup(config: StartConfig) throws -> Server
       camera.onRecordingAudioActiveChange = { [weak monitoring, weak camera] active in
         UserDefaults.standard.set(active ? 1 : 0, forKey: PrefKey.recordingAudioActive)
         if let camera, camera.homeKitCameraActive,
-          camera.recordingActive != 0, camera.streamSession == nil
+          camera.recordingActive != 0, !camera.hasActiveStreamSession
         {
           monitoring?.stop()
           monitoring?.audioRecordingEnabled = active && camera.microphoneEnabled
@@ -1556,7 +1557,7 @@ private nonisolated func createServerSetup(config: StartConfig) throws -> Server
       weak ambientLightDetector
     ] in
     // Resume monitoring if recording armed or sensors need frames + no live stream
-    if let camera, camera.homeKitCameraActive, camera.streamSession == nil,
+    if let camera, camera.homeKitCameraActive, !camera.hasActiveStreamSession,
       camera.recordingActive != 0 || occupancyDetector != nil || ambientLightDetector != nil,
       let device = camera.resolvedCamera
     {

@@ -560,13 +560,8 @@ public final class FragmentedMP4Writer: @unchecked Sendable {
     Self.putU32BE(&mvhdP, includeAudio ? 3 : 2)  // next_track_ID
     let mvhd = Self.mp4FullBox("mvhd", payload: mvhdP)
 
-    guard
-      let videoTrack = buildVideoTrack(
-        trackID: 1, width: width, height: height, sampleEntry: entry)
-    else {
-      logger.error("buildInitSegment: failed to build video track")
-      return nil
-    }
+    let videoTrack = buildVideoTrack(
+      trackID: 1, width: width, height: height, sampleEntry: entry)
 
     // mvex (movie extends — required for fragmented MP4)
     // No mehd box — positron's working implementation omits it, and it's optional per ISO 14496-12.
@@ -657,7 +652,7 @@ public final class FragmentedMP4Writer: @unchecked Sendable {
 
   private func buildVideoTrack(
     trackID: UInt32, width: UInt16, height: UInt16, sampleEntry: (name: String, configuration: Data)
-  ) -> Data? {
+  ) -> Data {
     // tkhd
     var tkhdP = Data()
     Self.putU32BE(&tkhdP, 0)  // creation_time

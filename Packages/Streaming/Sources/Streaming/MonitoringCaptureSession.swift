@@ -406,7 +406,7 @@ public nonisolated final class MonitoringCaptureSession: @unchecked Sendable {
     }
 
     // Rotate output to match device orientation.
-    let rotationAngle = useHEVC ? 0 : Self.currentRotationAngle()
+    let rotationAngle = Self.currentRotationAngle()
     if let connection = output.connection(with: .video) {
       if #available(iOS 17.0, macOS 14.0, *) {
         if connection.isVideoRotationAngleSupported(CGFloat(rotationAngle)) {

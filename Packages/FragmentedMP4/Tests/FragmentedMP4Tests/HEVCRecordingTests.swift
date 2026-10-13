@@ -2,31 +2,13 @@ import AVFoundation
 import CoreMedia
 import CoreVideo
 import Foundation
+import Locked
 import Testing
 import VideoToolbox
 
 @testable import FragmentedMP4
 
-// VideoToolbox invokes its callback on an encoder-owned thread. All mutable
-// results are protected by this lock; buffers are immutable after delivery.
-private final class EncoderOutput: @unchecked Sendable {
-  private let lock = NSLock()
-  private var buffers: [CMSampleBuffer] = []
-  private var statuses: [OSStatus] = []
-
-  func append(_ buffer: CMSampleBuffer?, status: OSStatus) {
-    lock.lock()
-    defer { lock.unlock() }
-    statuses.append(status)
-    if let buffer { buffers.append(buffer) }
-  }
-
-  var result: ([CMSampleBuffer], [OSStatus]) {
-    lock.lock()
-    defer { lock.unlock() }
-    return (buffers, statuses)
-  }
-}
+private typealias EncoderOutput = Locked<(buffers: [CMSampleBuffer], statuses: [OSStatus])>
 
 @Suite("HEVC Recording")
 struct HEVCRecordingTests {
@@ -42,17 +24,21 @@ struct HEVCRecordingTests {
           0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
         ]))
   }
-  @Test("Real 4K HEVC frames survive MP4 packaging and decoding")
-  func roundTrip4K() async throws {
-    let output = EncoderOutput()
+  @Test("Real 4K HEVC frames survive MP4 packaging and decoding", arguments: [false, true])
+  func roundTrip4K(portrait: Bool) async throws {
+    let width = portrait ? 2160 : 3840
+    let height = portrait ? 3840 : 2160
+    let output = EncoderOutput(initialState: ([], []))
     var session: VTCompressionSession?
     let status = VTCompressionSessionCreate(
-      allocator: nil, width: 3840, height: 2160, codecType: kCMVideoCodecType_HEVC,
+      allocator: nil, width: Int32(width), height: Int32(height), codecType: kCMVideoCodecType_HEVC,
       encoderSpecification: nil, imageBufferAttributes: nil, compressedDataAllocator: nil,
       outputCallback: { refcon, _, status, _, buffer in
         guard let refcon else { return }
-        Unmanaged<EncoderOutput>.fromOpaque(refcon).takeUnretainedValue().append(
-          buffer, status: status)
+        Unmanaged<EncoderOutput>.fromOpaque(refcon).takeUnretainedValue().withLockUnchecked {
+          $0.statuses.append(status)
+          if let buffer { $0.buffers.append(buffer) }
+        }
       },
       refcon: Unmanaged.passUnretained(output).toOpaque(), compressionSessionOut: &session)
     try #require(status == noErr)
@@ -70,7 +56,7 @@ struct HEVCRecordingTests {
     var pixelBuffer: CVPixelBuffer?
     try #require(
       CVPixelBufferCreate(
-        nil, 3840, 2160, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        nil, width, height, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
         [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixelBuffer) == noErr)
     let pixels = try #require(pixelBuffer)
     CVPixelBufferLockBaseAddress(pixels, [])
@@ -93,7 +79,7 @@ struct HEVCRecordingTests {
     try #require(
       VTCompressionSessionCompleteFrames(
         encoder, untilPresentationTimeStamp: .positiveInfinity) == noErr)
-    let (samples, errors) = output.result
+    let (samples, errors) = output.valueUnchecked
     try #require(samples.count == 3)
     #expect(errors.allSatisfy { $0 == noErr })
 
@@ -124,8 +110,8 @@ struct HEVCRecordingTests {
     var frameCount = 0
     while let sample = decoded.copyNextSampleBuffer() {
       let pixels = try #require(sample.imageBuffer)
-      #expect(CVPixelBufferGetWidth(pixels) == 3840)
-      #expect(CVPixelBufferGetHeight(pixels) == 2160)
+      #expect(CVPixelBufferGetWidth(pixels) == width)
+      #expect(CVPixelBufferGetHeight(pixels) == height)
       frameCount += 1
     }
     #expect(frameCount == 3)
