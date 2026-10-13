@@ -631,7 +631,11 @@ nonisolated final class HAPCameraAccessory: HAPAccessoryProtocol, HAPSnapshotPro
     case Self.iidRecordingActive:
       if let v = intFromValue(value) {
         let clamped = Int(UInt8(clamping: v))
-        hksvState.withLock { $0.recordingActive = UInt8(clamping: v) }
+        let wasActive = hksvState.withLock { state in
+          let wasActive = state.recordingActive != 0
+          state.recordingActive = UInt8(clamping: v)
+          return wasActive
+        }
         let isActive = clamped != 0
         onRecordingConfigChange?(isActive)
         onStateChange?(aid, iid, .int(clamped))
@@ -641,7 +645,7 @@ nonisolated final class HAPCameraAccessory: HAPAccessoryProtocol, HAPSnapshotPro
         // The monitoring layer handles that overlap gracefully.
         if isActive {
           let hasStream = hasActiveStreamSession
-          if recordIn4K && hasStream {
+          if recordIn4K && !wasActive && streamSession?.isCapturing == true {
             // Reconfigure a live 1080p capture before arming native 4K recording.
             stopStreaming()
           } else if !hasStream {

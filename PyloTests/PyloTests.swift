@@ -640,9 +640,12 @@ struct CameraWriteCharacteristicTests {
     #expect(monitoringNeeded.withLock { $0 } == true)
   }
 
-  @Test("Recording active does not trigger monitoring when stream session exists")
-  func recordingActiveSkipsMonitoringWithStream() {
+  @Test(
+    "Recording enable preserves a prepared stream, including repeated writes",
+    arguments: [false, true])
+  func recordingActiveSkipsMonitoringWithStream(recordIn4K: Bool) {
     let camera = HAPCameraAccessory(aid: 3)
+    camera.recordIn4K = recordIn4K
     // Install a dummy stream session so hasActiveStreamSession returns true
     let dummySession = CameraStreamSession(
       sessionID: Data(repeating: 0, count: 16),
@@ -657,8 +660,11 @@ struct CameraWriteCharacteristicTests {
     camera.onMonitoringCaptureNeeded = { _, _ in
       monitoringCalled.withLock { $0 = true }
     }
-    camera.writeCharacteristic(iid: HAPCameraAccessory.iidRecordingActive, value: .int(1))
-    #expect(monitoringCalled.withLock { $0 } == false)
+    for _ in 0..<2 {
+      camera.writeCharacteristic(iid: HAPCameraAccessory.iidRecordingActive, value: .int(1))
+      #expect(camera.streamSession === dummySession)
+      #expect(monitoringCalled.withLock { $0 } == false)
+    }
   }
 
   @Test("Recording deactivate triggers monitoring stop")

@@ -43,6 +43,8 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
 
   // Video pipeline
   private var captureSession: AVCaptureSession?
+  /// Read by the capture owner on the same queue that starts and stops streaming.
+  public var isCapturing: Bool { captureSession != nil }
   private var interruptionObservers: [NSObjectProtocol] = []
   private var videoOutput: AVCaptureVideoDataOutput?
   private var compressionSession: VTCompressionSession?
@@ -325,6 +327,7 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
     if let recordingWriter {
       guard #available(iOS 17.4, *), camera.supportsSessionPreset(.hd4K3840x2160)
       else {
+        existingCaptureSession?.stopRunning()
         tearDown(keepCaptureSession: false)
         return false
       }
@@ -338,6 +341,7 @@ public nonisolated final class CameraStreamSession: @unchecked Sendable {
         }
       } catch {
         logger.error("Recording encoder setup failed: \(error)")
+        existingCaptureSession?.stopRunning()
         tearDown(keepCaptureSession: false)
         return false
       }
